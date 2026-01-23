@@ -805,12 +805,8 @@ const btnAdd = document.getElementById('btnAddPlayer');
 const colorPicker = document.getElementById('color-picker');
 
 btnAdd.addEventListener('click', (e) => {
-    colorPicker.style.display = 'grid';
-    const rect = btnAdd.getBoundingClientRect();
-    colorPicker.style.top = (rect.bottom + 5) + 'px';
-    colorPicker.style.left = rect.left + 'px';
+    // 1. Populate the swatches FIRST so the element has a height
     colorPicker.innerHTML = '';
-    
     CONFIG.colors.forEach(c => {
         const swatch = document.createElement('div');
         swatch.className = 'color-swatch';
@@ -821,6 +817,17 @@ btnAdd.addEventListener('click', (e) => {
         };
         colorPicker.appendChild(swatch);
     });
+
+    // 2. Make it visible so we can measure its height
+    colorPicker.style.display = 'grid';
+    
+    // 3. Calculate Position
+    const rect = btnAdd.getBoundingClientRect();
+    const pickerHeight = colorPicker.offsetHeight; // Get height of the populated picker
+
+    // 4. Position Above: Button Top - Picker Height - Margin (10px)
+    colorPicker.style.top = (rect.top - pickerHeight - 10) + 'px';
+    colorPicker.style.left = rect.left + 'px';
 });
 
 // Undo
