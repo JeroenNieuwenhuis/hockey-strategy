@@ -47,8 +47,11 @@
         canvas {
             background-color: #fff;
             cursor: crosshair;
+            touch-action: none;
+            -webkit-touch-callout: none; /* iOS Safari */
+            -webkit-user-select: none;   /* Chrome/Safari */
+            user-select: none;
         }
-
         /* Timeline */
         #timeline-container {
             background: var(--panel);
@@ -519,7 +522,10 @@ function draw() {
 /**
  * 5. INTERACTION
  */
-function getMousePos(evt) {
+ // PRE-REQUISITE: Prevent default browser scrolling on the canvas
+ // --- 1. COORDINATE HELPER ---
+// Works for both Mouse and Touch events
+function getInputPos(evt) {
     const rect = canvas.getBoundingClientRect();
     const clientX = evt.clientX || (evt.touches ? evt.touches[0].clientX : 0);
     const clientY = evt.clientY || (evt.touches ? evt.touches[0].clientY : 0);
@@ -534,24 +540,30 @@ function getMousePos(evt) {
     };
 }
 
-// Mouse Down
-canvas.addEventListener('mousedown', (e) => {
+// --- 2. LOGIC FUNCTIONS ---
+// (We separate logic from the event listener to reuse it)
+
+function handleStart(e) {
+    if (e.cancelable) e.preventDefault(); // CRITICAL for Android to stop scrolling
     if (state.isPlaying) return;
-    const pos = getMousePos(e);
-    
+
+    // CRITICAL FIX: Lock the pointer to the canvas so Android doesn't steal the drag
+    canvas.setPointerCapture(e.pointerId);
+
+    const pos = getInputPos(e);
+
     // Check handles first (Rotation)
     if (state.selectedPlayerId) {
         const p = state.players.find(pl => pl.id === state.selectedPlayerId);
         const frame = getKeyframeAt(p, state.currentTime);
         
-        // Transform handle position to world space
         const handleDist = CONFIG.baseWidth * 0.056;
         const hx = frame.x + Math.cos(frame.angle) * handleDist;
         const hy = frame.y + Math.sin(frame.angle) * handleDist;
         
         const distToHandle = Math.hypot(pos.x - hx, pos.y - hy);
         if (distToHandle < CONFIG.baseWidth * 0.026) {
-            saveState(); // Start rotation
+            saveState();
             state.dragState = { type: 'rotate', playerId: p.id };
             return;
         }
@@ -559,7 +571,6 @@ canvas.addEventListener('mousedown', (e) => {
 
     // Check Players
     let hitId = null;
-    // Iterate reverse to click top players first
     for (let i = state.players.length - 1; i >= 0; i--) {
         const p = state.players[i];
         const frame = getKeyframeAt(p, state.currentTime);
@@ -572,46 +583,61 @@ canvas.addEventListener('mousedown', (e) => {
 
     if (hitId) {
         state.selectedPlayerId = hitId;
-        saveState(); // Start Drag
+        saveState();
         state.dragState = { type: 'move', playerId: hitId };
         draw();
     } else {
         state.selectedPlayerId = null;
         draw();
     }
-});
+}
 
-// Mouse Move
-canvas.addEventListener('mousemove', (e) => {
+function handleMove(e) {
+    if (e.cancelable) e.preventDefault(); // Stop Android Pull-to-refresh
     if (!state.dragState) return;
-    const pos = getMousePos(e);
+    
+    const pos = getInputPos(e);
     const p = state.players.find(pl => pl.id === state.dragState.playerId);
     
     if (state.dragState.type === 'move') {
         updateKeyframe(p.id, state.currentTime, pos.x, pos.y, null);
     } else if (state.dragState.type === 'rotate') {
-        const frame = getKeyframeAt(p, state.currentTime); // Get current pos to pivot
+        const frame = getKeyframeAt(p, state.currentTime);
         const angle = Math.atan2(pos.y - frame.y, pos.x - frame.x);
         updateKeyframe(p.id, state.currentTime, frame.x, frame.y, angle);
     }
 
+    // Refresh interpolated frames for others
     for (const p of state.players) {
-        updateKeyframe(p.id, state.currentTime, getPrevKeyframe(p, state.currentTime).x, getPrevKeyframe(p, state.currentTime).y, getPrevKeyframe(p, state.currentTime).angle);
+        const prev = getPrevKeyframe(p, state.currentTime);
+        updateKeyframe(p.id, state.currentTime, prev.x, prev.y, prev.angle);
     }
     draw();
-});
+}
 
-// Mouse Up
-window.addEventListener('mouseup', () => {
+function handleEnd(e) {
+    // Note: TouchEnd doesn't usually have coordinates, so we don't need getInputPos here
+
+    if(e.pointerId) {
+        try { canvas.releasePointerCapture(e.pointerId); } catch(err) {}
+    }
     if (state.dragState) {
         state.dragState = null;
     }
-});
+}
 
-// Context Menu (Right Click)
+// --- 3. ATTACH LISTENERS ---
+// --- ATTACH LISTENERS (Unified Pointer Events) ---
+// Note: We attach 'move' to the canvas now, because setPointerCapture handles the bubbling.
+canvas.addEventListener('pointerdown', handleStart);
+canvas.addEventListener('pointermove', handleMove);
+canvas.addEventListener('pointerup', handleEnd);
+canvas.addEventListener('pointercancel', handleEnd);
+
+// Context Menu (Right Click) - Kept mostly same
 canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    const pos = getMousePos(e);
+    const pos = getInputPos(e); // Reuse our helper
     
     // Check if clicked on a player
     let hitId = null;
@@ -631,12 +657,22 @@ canvas.addEventListener('contextmenu', (e) => {
         
         const menu = document.getElementById('context-menu');
         menu.style.display = 'flex';
-        menu.style.left = e.pageX + 'px';
-        menu.style.top = e.pageY + 'px';
+        // Handle coordinates for menu position
+        let pageX = e.pageX;
+        let pageY = e.pageY;
+        
+        // Fix for touch context menu positioning if needed
+        if(e.touches && e.touches.length > 0) {
+             pageX = e.touches[0].pageX;
+             pageY = e.touches[0].pageY;
+        }
 
-        // Configure delete keyframe logic
+        menu.style.left = pageX + 'px';
+        menu.style.top = pageY + 'px';
+
+        // ... (Rest of your Context Menu logic remains the same) ...
         const p = state.players.find(pl => pl.id === hitId);
-        const kf = getKeyframeAt(p, state.currentTime, true); // Strict check
+        const kf = getKeyframeAt(p, state.currentTime, true);
         const btnDelKf = document.getElementById('ctx-delete-keyframe');
         
         if (kf) {
@@ -660,12 +696,15 @@ canvas.addEventListener('contextmenu', (e) => {
     }
 });
 
-window.addEventListener('click', (e) => {
+// Window clicks to close menus
+window.addEventListener('pointerdown', (e) => {
     if (!e.target.closest('#context-menu')) {
-        document.getElementById('context-menu').style.display = 'none';
+        const menu = document.getElementById('context-menu');
+        if (menu) menu.style.display = 'none';
     }
     if (!e.target.closest('#color-picker') && !e.target.closest('#btnAddPlayer')) {
-        document.getElementById('color-picker').style.display = 'none';
+        const picker = document.getElementById('color-picker');
+        if (picker) picker.style.display = 'none';
     }
 });
 
